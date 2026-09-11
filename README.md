@@ -42,9 +42,18 @@ beside the icon while the hotspot is active.
 - `iw`;
 - Python 3 and the `python-dbus` module.
 
+When a required component is missing, the panel shows an **Install
+dependencies** button. The button requires an explicit click and runs the
+fixed official-package command through `pkexec`: `networkmanager`, `dnsmasq`,
+`iw`, and `python-dbus`. It does not execute shell input or download code.
+On systems where this is unavailable, install the packages manually with
+`omarchy pkg add` or the system package manager.
+
 The plugin runs its unprivileged Python helper as the logged-in user and uses
-NetworkManager's system D-Bus API. It does not call `sudo`, `pkexec`, or write
-system configuration files.
+NetworkManager's system D-Bus API. The normal hotspot path does not call
+`sudo` or `pkexec` and does not write system configuration files. `pkexec` is
+used only after the user explicitly clicks **Install dependencies**, with a
+fixed package list.
 
 The saved settings, including the password, are stored locally at
 `~/.config/omarchy/omarchy-hotspot/preferences.json`. The directory is `0700`

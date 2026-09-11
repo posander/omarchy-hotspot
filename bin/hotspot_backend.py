@@ -32,6 +32,12 @@ PROFILE_NAME = "Omarchy Hotspot (temporary)"
 PROFILE_PREFIX = "Omarchy Hotspot (temporary)"
 MAC_RE = re.compile(r"^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$", re.IGNORECASE)
 CHANNEL_RE = re.compile(r"^\s*\*\s+(\d+(?:\.\d+)?)\s+MHz\s+\[(\d+)\]")
+REQUIRED_DEPENDENCIES: tuple[dict[str, str], ...] = (
+    {"package": "networkmanager", "label": "NetworkManager", "command": "nmcli"},
+    {"package": "dnsmasq", "label": "dnsmasq", "command": "dnsmasq"},
+    {"package": "iw", "label": "iw", "command": "iw"},
+    {"package": "python-dbus", "label": "Python D-Bus", "module": "dbus"},
+)
 
 
 def runtime_directory() -> Path:
@@ -104,6 +110,29 @@ def command_output(args: list[str], timeout: int = 20) -> str:
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return result.stdout if result.returncode == 0 else ""
+
+
+def dependency_status() -> dict[str, Any]:
+    """Report runtime components needed by the NetworkManager backend."""
+
+    missing: list[dict[str, str]] = []
+    for dependency in REQUIRED_DEPENDENCIES:
+        available = True
+        command = dependency.get("command")
+        module = dependency.get("module")
+        if command and shutil.which(command) is None:
+            available = False
+        if module == "dbus" and dbus is None:
+            available = False
+        if not available:
+            missing.append({
+                "package": dependency["package"],
+                "label": dependency["label"],
+            })
+    return {
+        "ready": not missing,
+        "missing": missing,
+    }
 
 
 def split_nmcli(line: str) -> list[str]:
@@ -743,8 +772,10 @@ def validate_settings(settings: dict[str, Any], adapter: dict[str, Any] | None) 
 
 def start_hotspot(settings: dict[str, Any], duration: int) -> tuple[bool, dict[str, Any] | str]:
     settings = normalize_preferences(settings)
-    if shutil.which("dnsmasq") is None:
-        return False, "dnsmasq is required for DHCP/NAT; install the dnsmasq package"
+    dependencies = dependency_status()
+    if not dependencies["ready"]:
+        names = ", ".join(item["label"] for item in dependencies["missing"])
+        return False, f"Missing required components: {names}. Install them and try again."
     caps = inspect_adapters()
     adapter = next((item for item in caps["adapters"] if item["iface"] == settings.get("iface")), None)
     error = validate_settings(settings, adapter)
@@ -848,6 +879,8 @@ def handle(request: dict[str, Any]) -> tuple[bool, Any]:
         return True, {}
     if command in ("inspect", "capabilities"):
         return True, inspect_adapters()
+    if command == "dependencies":
+        return True, dependency_status()
     if command == "status":
         return True, status()
     if command == "stop":

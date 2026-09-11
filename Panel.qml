@@ -26,8 +26,10 @@ Panel {
   readonly property var channelOptions: Model.channelsFor(root.currentAdapter, root.band)
 
   property var capabilities: ({ adapters: [], uplinks: [], errors: [], networkManager: false })
+  property var dependencyStatus: ({ ready: false, missing: [] })
   property var hotspotStatus: ({ active: false, expiresAt: 0 })
   property bool busy: false
+  property bool dependencyCheckInFlight: false
   property bool statusInFlight: false
   property bool capabilitiesInFlight: false
   property bool preferencesLoaded: false
@@ -44,6 +46,16 @@ Panel {
   property string channel: ""
   property string duration: "3600"
   property real clockTick: Date.now() / 1000
+
+  readonly property bool dependenciesReady: root.dependencyStatus.ready === true
+  readonly property bool dependencyInstallRunning: backend.installingDependencies
+  readonly property string missingDependencyNames: {
+    var missing = root.dependencyStatus.missing || []
+    var names = []
+    for (var index = 0; index < missing.length; index++)
+      names.push(String(missing[index].label || missing[index].package || "unknown"))
+    return names.join(", ")
+  }
 
   onSelectedIfaceChanged: root.schedulePreferencesSave()
   onSsidChanged: root.schedulePreferencesSave()
@@ -97,6 +109,23 @@ Panel {
     }
   }
 
+  Connections {
+    target: backend
+    function onDependencyInstallFinished(exitCode, output) {
+      if (exitCode === 0) {
+        root.errorMessage = ""
+        root.infoMessage = "Dependencies installed. Checking again…"
+        root.refreshDependencies()
+        root.refreshCapabilities()
+      } else {
+        var lines = String(output || "").trim().split("\n")
+        var detail = lines.length && lines[lines.length - 1] ? ": " + lines[lines.length - 1] : ""
+        root.errorMessage = "Dependency installation was cancelled or failed" + detail
+        root.infoMessage = ""
+      }
+    }
+  }
+
   function setFormDefaults() {
     var adapter = Model.findAdapter(root.capabilities.adapters, root.selectedIface)
     if (!adapter) {
@@ -116,6 +145,27 @@ Panel {
     var channels = Model.channelsFor(adapter, root.band).map(function(option) { return option.value })
     if (channels.indexOf(String(root.channel)) === -1)
       root.channel = Model.defaultChannel(adapter, root.band)
+  }
+
+  function refreshDependencies() {
+    if (root.dependencyCheckInFlight || root.dependencyInstallRunning) return
+    root.dependencyCheckInFlight = true
+    backend.send("dependencies", {}, function(data, error) {
+      root.dependencyCheckInFlight = false
+      if (error) {
+        root.dependencyStatus = ({ ready: false, missing: [] })
+        root.errorMessage = error
+        return
+      }
+      root.dependencyStatus = data || ({ ready: false, missing: [] })
+    })
+  }
+
+  function installDependencies() {
+    if (root.dependencyInstallRunning || root.dependenciesReady) return
+    root.errorMessage = ""
+    root.infoMessage = "Installing required components…"
+    backend.installDependencies()
   }
 
   function refreshCapabilities() {
@@ -268,6 +318,7 @@ Panel {
   }
 
   Component.onCompleted: {
+    root.refreshDependencies()
     root.refreshCapabilities()
     root.refreshStatus()
     root.loadPreferences()
@@ -326,9 +377,38 @@ Panel {
             trailingControl: Component {
               ToggleSwitch {
                 checked: root.hotspotStatus.active
-                busy: root.busy
+                busy: root.busy || root.dependencyInstallRunning
+                enabled: root.dependenciesReady
                 onToggled: root.hotspotStatus.active ? root.stopHotspot() : root.startHotspot()
               }
+            }
+          }
+
+          Column {
+            width: parent.width
+            visible: !root.dependenciesReady || root.dependencyInstallRunning
+            spacing: Style.space(8)
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.dependencyInstallRunning
+                ? "Installing required components…"
+                : root.dependencyCheckInFlight
+                  ? "Checking required components…"
+                  : "Missing required components: " + root.missingDependencyNames
+              color: root.dependencyInstallRunning ? Qt.darker(root.foreground, 1.35) : Color.urgent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Button {
+              width: parent.width
+              text: root.dependencyInstallRunning ? "Installing…" : "Install dependencies"
+              iconText: "󰒓"
+              enabled: !root.dependencyCheckInFlight && !root.dependencyInstallRunning && !root.busy && !root.dependenciesReady
+              onClicked: root.installDependencies()
             }
           }
 
@@ -524,7 +604,7 @@ Panel {
             Button {
               text: root.hotspotStatus.active ? "Apply & restart" : "Enable hotspot"
               iconText: "󰐊"
-              enabled: !root.busy && !!root.currentAdapter && root.currentAdapter.apSupported
+              enabled: !root.busy && !root.dependencyInstallRunning && root.dependenciesReady && !!root.currentAdapter && root.currentAdapter.apSupported
               onClicked: root.startHotspot()
             }
 
@@ -539,9 +619,9 @@ Panel {
             Button {
               text: "Refresh"
               iconText: "󰑐"
-              enabled: !root.busy
+              enabled: !root.busy && !root.dependencyInstallRunning
               bordered: true
-              onClicked: { root.refreshCapabilities(); root.refreshStatus() }
+              onClicked: { root.refreshDependencies(); root.refreshCapabilities(); root.refreshStatus() }
             }
           }
 

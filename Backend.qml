@@ -12,8 +12,11 @@ QtObject {
   property int serial: 0
   property var pending: ({})
   property var queued: []
+  property string dependencyInstallOutput: ""
+  readonly property bool installingDependencies: dependencyInstaller.running
 
   signal logMessage(string message)
+  signal dependencyInstallFinished(int exitCode, string output)
 
   function start() {
     if (!process.running) process.running = true
@@ -23,6 +26,13 @@ QtObject {
     root.desiredRunning = false
     root.queued = []
     if (process.running) process.running = false
+  }
+
+  // Installation is deliberately explicit and uses a fixed package list.
+  // pkexec shows the system authentication prompt; no shell or user-provided
+  // command is involved.
+  function installDependencies() {
+    if (!dependencyInstaller.running) dependencyInstaller.running = true
   }
 
   function send(command, fields, callback) {
@@ -94,6 +104,38 @@ QtObject {
       Qt.callLater(function() {
         if (root.desiredRunning && !process.running) process.running = true
       })
+    }
+  }
+
+  property Process dependencyInstaller: Process {
+    id: dependencyInstaller
+    command: [
+      "/usr/bin/pkexec",
+      "/usr/bin/pacman",
+      "-S",
+      "--needed",
+      "--noconfirm",
+      "networkmanager",
+      "dnsmasq",
+      "iw",
+      "python-dbus"
+    ]
+
+    stdout: SplitParser {
+      onRead: function(line) {
+        root.dependencyInstallOutput += String(line || "") + "\n"
+      }
+    }
+
+    stderr: SplitParser {
+      onRead: function(line) {
+        root.dependencyInstallOutput += String(line || "") + "\n"
+      }
+    }
+
+    onStarted: root.dependencyInstallOutput = ""
+    onExited: function(exitCode) {
+      root.dependencyInstallFinished(exitCode, root.dependencyInstallOutput.trim())
     }
   }
 

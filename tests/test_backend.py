@@ -145,6 +145,16 @@ Band 2:
         finally:
             backend.shutil.which = original_which
 
+    def test_dependency_status_reports_missing_component(self):
+        original_which = backend.shutil.which
+        try:
+            backend.shutil.which = lambda name: None if name == "dnsmasq" else "/usr/bin/" + name
+            status = backend.dependency_status()
+            self.assertFalse(status["ready"])
+            self.assertEqual(status["missing"], [{"package": "dnsmasq", "label": "dnsmasq"}])
+        finally:
+            backend.shutil.which = original_which
+
 
 if __name__ == "__main__":
     unittest.main()
