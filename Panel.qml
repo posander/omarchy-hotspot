@@ -363,6 +363,8 @@ Panel {
 
           PanelHero {
             width: parent.width
+            visible: root.dependenciesReady
+            height: visible ? implicitHeight : 0
             iconComponent: Component {
               Text {
                 text: root.hotspotStatus.active ? "󰖩" : "󰖪"
@@ -386,8 +388,28 @@ Panel {
 
           Column {
             width: parent.width
-            visible: !root.dependenciesReady || root.dependencyInstallRunning
+            visible: !root.dependenciesReady
+            height: visible ? implicitHeight : 0
             spacing: Style.space(8)
+
+            Text {
+              width: parent.width
+              text: "Omarchy Wi-Fi Hotspot"
+              color: root.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "The hotspot needs NetworkManager, dnsmasq, iw, and Python D-Bus for adapter detection, DHCP, and internet sharing."
+              color: Qt.darker(root.foreground, 1.35)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
 
             Text {
               width: parent.width
@@ -396,7 +418,9 @@ Panel {
                 ? "Installing required components…"
                 : root.dependencyCheckInFlight
                   ? "Checking required components…"
-                  : "Missing required components: " + root.missingDependencyNames
+                  : root.missingDependencyNames !== ""
+                    ? "Missing: " + root.missingDependencyNames
+                    : "Dependency check failed. Press Refresh to try again."
               color: root.dependencyInstallRunning ? Qt.darker(root.foreground, 1.35) : Color.urgent
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
@@ -410,7 +434,36 @@ Panel {
               enabled: !root.dependencyCheckInFlight && !root.dependencyInstallRunning && !root.busy && !root.dependenciesReady
               onClicked: root.installDependencies()
             }
+
+            Text {
+              width: parent.width
+              visible: root.errorMessage !== ""
+              textFormat: Text.PlainText
+              text: root.errorMessage
+              color: Color.urgent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              visible: root.infoMessage !== ""
+              textFormat: Text.PlainText
+              text: root.infoMessage
+              color: Qt.darker(root.foreground, 1.35)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
           }
+
+          Column {
+            id: mainInterface
+            width: parent.width
+            visible: root.dependenciesReady
+            height: visible ? implicitHeight : 0
+            spacing: Style.space(12)
 
           Text {
             width: parent.width
@@ -645,6 +698,7 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
+          }
           }
         }
       }

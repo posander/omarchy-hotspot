@@ -46,6 +46,9 @@ When a required component is missing, the panel shows an **Install
 dependencies** button. The button requires an explicit click and runs the
 fixed official-package command through `pkexec`: `networkmanager`, `dnsmasq`,
 `iw`, and `python-dbus`. It does not execute shell input or download code.
+Until the check succeeds, the hotspot settings are hidden and the panel shows
+only the installation explanation, missing-package list, button, and short
+installation status.
 On systems where this is unavailable, install the packages manually with
 `omarchy pkg add` or the system package manager.
 
