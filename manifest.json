@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "posander.omarchy-hotspot",
+  "name": "Omarchy Wi-Fi Hotspot",
+  "version": "0.2.0",
+  "author": "Posander",
+  "license": "MIT",
+  "description": "Temporary Wi-Fi hotspot with adapter capability detection and timed shutdown",
+  "homepage": "https://github.com/posander/omarchy-hotspot",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omarchy Wi-Fi Hotspot",
+    "description": "Create and control a temporary Wi-Fi hotspot",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
