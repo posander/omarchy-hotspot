@@ -112,11 +112,14 @@ Panel {
   Connections {
     target: backend
     function onDependencyInstallFinished(exitCode, output) {
+      root.dependencyCheckInFlight = false
       if (exitCode === 0) {
         root.errorMessage = ""
         root.infoMessage = "Dependencies installed. Checking again…"
-        root.refreshDependencies()
-        root.refreshCapabilities()
+        // Process.onExited can be delivered just before QML observes
+        // dependencyInstaller.running == false. Wait until that state has
+        // settled before sending the follow-up probe.
+        dependencyRefreshTimer.start()
       } else {
         var lines = String(output || "").trim().split("\n")
         var detail = lines.length && lines[lines.length - 1] ? ": " + lines[lines.length - 1] : ""
@@ -147,17 +150,21 @@ Panel {
       root.channel = Model.defaultChannel(adapter, root.band)
   }
 
-  function refreshDependencies() {
-    if (root.dependencyCheckInFlight || root.dependencyInstallRunning) return
+  function refreshDependencies(force) {
+    if (!force && (root.dependencyCheckInFlight || root.dependencyInstallRunning)) return
     root.dependencyCheckInFlight = true
+    dependencyCheckTimeout.restart()
     backend.send("dependencies", {}, function(data, error) {
+      dependencyCheckTimeout.stop()
       root.dependencyCheckInFlight = false
       if (error) {
         root.dependencyStatus = ({ ready: false, missing: [] })
         root.errorMessage = error
+        root.infoMessage = ""
         return
       }
       root.dependencyStatus = data || ({ ready: false, missing: [] })
+      if (root.dependenciesReady) root.infoMessage = ""
     })
   }
 
@@ -315,6 +322,30 @@ Panel {
     interval: 400
     repeat: false
     onTriggered: root.persistPreferences()
+  }
+
+  Timer {
+    id: dependencyRefreshTimer
+    interval: 150
+    repeat: true
+    onTriggered: {
+      if (root.dependencyInstallRunning) return
+      stop()
+      root.refreshDependencies(true)
+      root.refreshCapabilities()
+    }
+  }
+
+  Timer {
+    id: dependencyCheckTimeout
+    interval: 10000
+    repeat: false
+    onTriggered: {
+      if (!root.dependencyCheckInFlight) return
+      root.dependencyCheckInFlight = false
+      root.errorMessage = "Dependency check timed out. Press Refresh to try again."
+      root.infoMessage = ""
+    }
   }
 
   Component.onCompleted: {
