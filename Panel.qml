@@ -25,10 +25,12 @@ Panel {
   readonly property var bandOptions: Model.bandOptions(root.currentAdapter)
   readonly property var channelOptions: Model.channelsFor(root.currentAdapter, root.band)
 
-  property var capabilities: ({ adapters: [], uplinks: [], errors: [], networkManager: false })
+  property var capabilities: ({ adapters: [], uplinks: [], errors: [], networkManager: false, ipv4Forwarding: undefined, ufwEnabled: false })
   property var dependencyStatus: ({ ready: false, missing: [] })
   property var hotspotStatus: ({ active: false, expiresAt: 0 })
   property bool busy: false
+  property bool forwardingSetupConfirm: false
+  property bool forwardingSetupBusy: false
   property bool dependencyCheckInFlight: false
   property bool statusInFlight: false
   property bool capabilitiesInFlight: false
@@ -49,6 +51,7 @@ Panel {
 
   readonly property bool dependenciesReady: root.dependencyStatus.ready === true
   readonly property bool dependencyInstallRunning: backend.installingDependencies
+  readonly property bool forwardingSetupNeeded: root.capabilities.ipv4Forwarding === false
   readonly property string missingDependencyNames: {
     var missing = root.dependencyStatus.missing || []
     var names = []
@@ -92,6 +95,8 @@ Panel {
   readonly property string statusText: root.hotspotStatus.active
     ? "Active · " + root.hotspotStatus.ssid
     : (root.busy ? "Working…" : "Off")
+  readonly property bool internetSharingBlocked: root.hotspotStatus.active
+    && root.hotspotStatus.ipv4Forwarding === false
   readonly property bool formBlocked: ssidField.activeFocus
     || bssidField.activeFocus
     || passwordField.activeFocus
@@ -184,7 +189,7 @@ Panel {
         root.errorMessage = error
         return
       }
-      root.capabilities = data || ({ adapters: [], uplinks: [], errors: [], networkManager: false })
+      root.capabilities = data || ({ adapters: [], uplinks: [], errors: [], networkManager: false, ipv4Forwarding: undefined, ufwEnabled: false })
       root.setFormDefaults()
     })
   }
@@ -304,6 +309,31 @@ Panel {
       }
       root.hotspotStatus = ({ active: false, expiresAt: 0 })
       root.infoMessage = "Hotspot disabled"
+    })
+  }
+
+  function configureForwarding() {
+    if (root.forwardingSetupBusy || !root.forwardingSetupConfirm) return
+    root.forwardingSetupBusy = true
+    root.errorMessage = ""
+    root.infoMessage = "Configuring internet sharing…"
+    backend.send("configureForwarding", {
+      iface: root.selectedIface,
+      uplink: String(root.capabilities.defaultUplink || "")
+    }, function(data, requestError) {
+      root.forwardingSetupBusy = false
+      if (requestError) {
+        root.errorMessage = requestError
+        root.infoMessage = ""
+        return
+      }
+      root.forwardingSetupConfirm = false
+      root.errorMessage = ""
+      root.infoMessage = data && data.ufw
+        ? "IPv4 forwarding and UFW rules configured"
+        : "IPv4 forwarding configured"
+      root.refreshCapabilities()
+      root.refreshStatus()
     })
   }
 
@@ -549,6 +579,81 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
+          }
+
+          Column {
+            width: parent.width
+            visible: root.forwardingSetupNeeded || root.internetSharingBlocked
+            spacing: Style.space(8)
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.capabilities.ufwEnabled
+                ? "IPv4 forwarding is disabled. UFW is enabled, so the phone can connect but routed internet traffic is blocked."
+                : "IPv4 forwarding is disabled. The phone can connect to the hotspot, but routed internet traffic is blocked."
+              color: Color.urgent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              visible: !root.forwardingSetupConfirm
+              textFormat: Text.PlainText
+              text: "A one-time administrator action can enable forwarding"
+                + (root.capabilities.ufwEnabled ? " and add the UFW hotspot rules" : "") + "."
+              color: Qt.darker(root.foreground, 1.35)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Button {
+              width: parent.width
+              visible: !root.forwardingSetupConfirm
+              text: "Configure internet sharing"
+              iconText: "󰒓"
+              enabled: !root.busy && !root.forwardingSetupBusy
+              onClicked: root.forwardingSetupConfirm = true
+            }
+
+            Column {
+              width: parent.width
+              visible: root.forwardingSetupConfirm
+              spacing: Style.space(8)
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "This will persist net.ipv4.ip_forward=1. If UFW is enabled, it will add rules for "
+                  + root.selectedIface + " → " + String(root.capabilities.defaultUplink || "the current uplink") + ". Continue?"
+                color: Qt.darker(root.foreground, 1.35)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(8)
+
+                Button {
+                  text: root.forwardingSetupBusy ? "Waiting for authentication…" : "Continue"
+                  iconText: "󰐊"
+                  enabled: !root.forwardingSetupBusy
+                  onClicked: root.configureForwarding()
+                }
+
+                Button {
+                  text: "Cancel"
+                  bordered: true
+                  enabled: !root.forwardingSetupBusy
+                  onClicked: root.forwardingSetupConfirm = false
+                }
+              }
+            }
           }
 
           PanelSeparator { width: parent.width }

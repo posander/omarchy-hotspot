@@ -41,6 +41,7 @@ beside the icon while the hotspot is active.
 - `dnsmasq` (used by NetworkManager for DHCP/DNS in shared mode);
 - `iw`;
 - Python 3 and the `python-dbus` module.
+- `pkexec` for the optional first-run system networking setup.
 
 When a required component is missing, the panel shows an **Install
 dependencies** button. The button requires an explicit click and runs the
@@ -54,9 +55,12 @@ On systems where this is unavailable, install the packages manually with
 
 The plugin runs its unprivileged Python helper as the logged-in user and uses
 NetworkManager's system D-Bus API. The normal hotspot path does not call
-`sudo` or `pkexec` and does not write system configuration files. `pkexec` is
-used only after the user explicitly clicks **Install dependencies**, with a
-fixed package list.
+`sudo` or `pkexec`. If IPv4 forwarding is disabled, the panel offers an
+explicit **Configure internet sharing** action. After a second confirmation,
+it uses fixed `pkexec` commands to persist `net.ipv4.ip_forward=1`, apply it
+immediately, and—when UFW is enabled—add the required hotspot rules for the
+selected adapter and current default uplink. It never executes a shell or
+user-provided command as root.
 
 The saved settings, including the password, are stored locally at
 `~/.config/omarchy/omarchy-hotspot/preferences.json`. The directory is `0700`
@@ -68,8 +72,17 @@ repository or shared backup.
 
 NetworkManager's `shared` IPv4 mode provides the hotspot interface with
 `10.42.0.1/24` and starts its temporary DHCP/DNS service. If UFW is enabled
-with its default deny policy, allow DHCP, DNS, and forwarding once for the
-interfaces on the target machine:
+with its default deny policy, the panel's **Configure internet sharing**
+action can enable kernel IPv4 forwarding and add the required rules. The
+same setup can be performed manually by editing `/etc/ufw/sysctl.conf` and
+uncommenting this line:
+
+```text
+net/ipv4/ip_forward=1
+```
+
+Then apply it and allow DHCP, DNS, and forwarding once for the interfaces on
+the target machine:
 
 ```sh
 AP_IFACE=wlo1
@@ -81,6 +94,20 @@ sudo ufw allow in on "$AP_IFACE" to any port 53 proto tcp comment 'Omarchy Wi-Fi
 sudo ufw route allow in on "$AP_IFACE" out on "$UPLINK_IFACE" comment 'Omarchy Wi-Fi Hotspot forwarding'
 sudo ufw reload
 ```
+
+If UFW is not active, the setup action only writes its own sysctl drop-in and
+does not modify an unknown firewall. If `cat /proc/sys/net/ipv4/ip_forward`
+still prints `0`, enable and persist forwarding manually with the system's own
+sysctl configuration, for example:
+
+```sh
+sudo sysctl -w net.ipv4.ip_forward=1
+printf '%s\n' 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-omarchy-hotspot.conf
+sudo sysctl --system
+```
+
+The panel checks this kernel setting while the hotspot is active and shows a
+warning when a phone can connect but routed internet traffic is blocked.
 
 `UPLINK_IFACE` can be a VPN or proxy interface. On a system where forwarded
 traffic is redirected through Mihomo, for example, use `UPLINK_IFACE=Mihomo`

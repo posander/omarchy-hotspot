@@ -155,6 +155,54 @@ Band 2:
         finally:
             backend.shutil.which = original_which
 
+    def test_ipv4_forwarding_status_is_boolean(self):
+        self.assertIsInstance(backend.ipv4_forwarding_enabled(), bool)
+
+    def test_configure_forwarding_uses_fixed_ufw_commands(self):
+        original_values = {
+            "dropin": backend.FORWARDING_DROPIN,
+            "which": backend.shutil.which,
+            "devices": backend.network_manager_devices,
+            "default_route": backend.default_route_iface,
+            "ufw_enabled": backend.ufw_enabled,
+            "run_privileged": backend.run_privileged,
+            "forwarding": backend.ipv4_forwarding_enabled,
+        }
+        calls = []
+        backend.FORWARDING_DROPIN = Path(TEST_RUNTIME) / "sysctl.d" / "99-omarchy-hotspot.conf"
+        backend.FORWARDING_DROPIN.parent.mkdir(parents=True, exist_ok=True)
+        backend.shutil.which = lambda name: {
+            "pkexec": "/usr/bin/pkexec",
+            "tee": "/usr/bin/tee",
+            "sysctl": "/usr/bin/sysctl",
+            "ufw": "/usr/bin/ufw",
+        }.get(name)
+        backend.network_manager_devices = lambda: [{"iface": "wlan0", "type": "wifi"}]
+        backend.default_route_iface = lambda: "enp3s0"
+        backend.ufw_enabled = lambda: True
+        backend.run_privileged = lambda args, input_text=None, timeout=20: (
+            calls.append((args, input_text)),
+            backend.subprocess.CompletedProcess(args, 0, "", ""),
+        )[1]
+        backend.ipv4_forwarding_enabled = lambda: True
+        try:
+            ok, data = backend.configure_forwarding("wlan0", "")
+            self.assertTrue(ok)
+            self.assertEqual(data, {"forwarding": True, "ufw": True, "uplink": "enp3s0"})
+            self.assertEqual(calls[0][0], ["/usr/bin/tee", str(backend.FORWARDING_DROPIN)])
+            self.assertEqual(calls[0][1], "net.ipv4.ip_forward=1\n")
+            self.assertEqual(calls[1][0], ["/usr/bin/sysctl", "-w", "net.ipv4.ip_forward=1"])
+            self.assertEqual(calls[-1][0], ["/usr/bin/ufw", "reload"])
+            self.assertEqual(len(calls), 7)
+        finally:
+            backend.FORWARDING_DROPIN = original_values["dropin"]
+            backend.shutil.which = original_values["which"]
+            backend.network_manager_devices = original_values["devices"]
+            backend.default_route_iface = original_values["default_route"]
+            backend.ufw_enabled = original_values["ufw_enabled"]
+            backend.run_privileged = original_values["run_privileged"]
+            backend.ipv4_forwarding_enabled = original_values["forwarding"]
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,7 +31,9 @@ except ImportError:  # The error is reported only if the user tries to start it.
 PROFILE_NAME = "Omarchy Hotspot (temporary)"
 PROFILE_PREFIX = "Omarchy Hotspot (temporary)"
 MAC_RE = re.compile(r"^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$", re.IGNORECASE)
+IFACE_RE = re.compile(r"^[a-zA-Z0-9_.:-]{1,15}$")
 CHANNEL_RE = re.compile(r"^\s*\*\s+(\d+(?:\.\d+)?)\s+MHz\s+\[(\d+)\]")
+FORWARDING_DROPIN = Path("/etc/sysctl.d/99-omarchy-hotspot.conf")
 REQUIRED_DEPENDENCIES: tuple[dict[str, str], ...] = (
     {"package": "networkmanager", "label": "NetworkManager", "command": "nmcli"},
     {"package": "dnsmasq", "label": "dnsmasq", "command": "dnsmasq"},
@@ -102,6 +104,18 @@ def run_command(args: list[str], input_text: str | None = None, timeout: int = 2
         env=env,
         check=False,
     )
+
+
+def run_privileged(args: list[str], input_text: str | None = None, timeout: int = 20) -> subprocess.CompletedProcess[str]:
+    """Run one fixed system command after an explicit polkit prompt."""
+
+    pkexec = shutil.which("pkexec")
+    if not pkexec:
+        return subprocess.CompletedProcess(args, 127, "", "pkexec is not installed")
+    command = list(args)
+    if command and not os.path.isabs(command[0]):
+        command[0] = shutil.which(command[0]) or command[0]
+    return run_command([pkexec, *command], input_text=input_text, timeout=timeout)
 
 
 def command_output(args: list[str], timeout: int = 20) -> str:
@@ -295,6 +309,27 @@ def default_route_iface() -> str:
     return ""
 
 
+def ipv4_forwarding_enabled() -> bool:
+    """Return the kernel-wide switch required to route hotspot traffic."""
+
+    try:
+        return Path("/proc/sys/net/ipv4/ip_forward").read_text(encoding="ascii").strip() == "1"
+    except (OSError, UnicodeError):
+        return False
+
+
+def ufw_enabled() -> bool:
+    """Detect UFW without invoking its root-only status command."""
+
+    if shutil.which("ufw") is None:
+        return False
+    try:
+        text = Path("/etc/ufw/ufw.conf").read_text(encoding="ascii")
+    except (OSError, UnicodeError):
+        return False
+    return bool(re.search(r"^\s*ENABLED\s*=\s*(yes|true|1)\s*$", text, re.IGNORECASE | re.MULTILINE))
+
+
 def inspect_adapters() -> dict[str, Any]:
     iw_text = command_output(["iw", "dev"])
     raw_devices = parse_iw_dev(iw_text)
@@ -334,6 +369,8 @@ def inspect_adapters() -> dict[str, Any]:
         "adapters": adapters,
         "uplinks": uplinks,
         "defaultUplink": default_iface,
+        "ipv4Forwarding": ipv4_forwarding_enabled(),
+        "ufwEnabled": ufw_enabled(),
         "networkManager": command_output(["nmcli", "-t", "-f", "RUNNING", "general"]).strip().lower()
         in ("running", "yes", "true"),
         "errors": errors,
@@ -728,6 +765,76 @@ def reset_wifi_radio() -> tuple[bool, str]:
     return True, ""
 
 
+def valid_interface_name(value: str) -> bool:
+    return bool(IFACE_RE.fullmatch(value))
+
+
+def configure_forwarding(iface: str, uplink: str) -> tuple[bool, dict[str, Any] | str]:
+    """Persist IPv4 forwarding and, when enabled, permit the UFW path."""
+
+    iface = str(iface or "").strip()
+    uplink = str(uplink or "").strip()
+    if not valid_interface_name(iface):
+        return False, "The selected hotspot interface name is invalid"
+
+    known_devices = {item["iface"]: item for item in network_manager_devices()}
+    if iface not in known_devices or known_devices[iface].get("type") != "wifi":
+        return False, "The selected hotspot interface is not an available Wi-Fi device"
+
+    ufw_active = ufw_enabled()
+    if not uplink:
+        uplink = default_route_iface()
+    if ufw_active and not valid_interface_name(uplink):
+        return False, "No default uplink was detected for the UFW forwarding rule"
+
+    tee = shutil.which("tee")
+    sysctl = shutil.which("sysctl")
+    if not tee or not sysctl:
+        return False, "The system is missing tee or sysctl"
+    if not FORWARDING_DROPIN.parent.is_dir():
+        return False, f"The sysctl directory does not exist: {FORWARDING_DROPIN.parent}"
+
+    result = run_privileged(
+        [tee, str(FORWARDING_DROPIN)],
+        input_text="net.ipv4.ip_forward=1\n",
+        timeout=20,
+    )
+    if result.returncode != 0:
+        return False, clean_error(result)
+
+    result = run_privileged([sysctl, "-w", "net.ipv4.ip_forward=1"], timeout=20)
+    if result.returncode != 0:
+        return False, clean_error(result)
+
+    if ufw_active:
+        ufw = shutil.which("ufw")
+        if not ufw:
+            return False, "UFW is enabled but its command was not found"
+        rules = [
+            [ufw, "allow", "in", "on", iface, "to", "any", "port", "67", "proto", "udp",
+             "comment", "Omarchy Wi-Fi Hotspot DHCP"],
+            [ufw, "allow", "in", "on", iface, "to", "any", "port", "53", "proto", "udp",
+             "comment", "Omarchy Wi-Fi Hotspot DNS"],
+            [ufw, "allow", "in", "on", iface, "to", "any", "port", "53", "proto", "tcp",
+             "comment", "Omarchy Wi-Fi Hotspot DNS"],
+            [ufw, "route", "allow", "in", "on", iface, "out", "on", uplink,
+             "comment", "Omarchy Wi-Fi Hotspot forwarding"],
+        ]
+        for rule in rules:
+            result = run_privileged(rule, timeout=30)
+            if result.returncode != 0:
+                return False, clean_error(result)
+        result = run_privileged([ufw, "reload"], timeout=30)
+        if result.returncode != 0:
+            return False, clean_error(result)
+
+    return True, {
+        "forwarding": ipv4_forwarding_enabled(),
+        "ufw": ufw_active,
+        "uplink": uplink,
+    }
+
+
 def clean_dbus_error(error: Exception) -> str:
     text = str(error).strip()
     if text.startswith("org.freedesktop.") and ":" in text:
@@ -863,6 +970,8 @@ def status() -> dict[str, Any]:
         "bssid": interface_mac(iface),
         "ip": interface_ipv4(iface),
         "clients": client_count(iface),
+        "ipv4Forwarding": ipv4_forwarding_enabled(),
+        "ufwEnabled": ufw_enabled(),
         "expiresAt": expires_at,
     }
 
@@ -881,6 +990,11 @@ def handle(request: dict[str, Any]) -> tuple[bool, Any]:
         return True, inspect_adapters()
     if command == "dependencies":
         return True, dependency_status()
+    if command == "configureForwarding":
+        return configure_forwarding(
+            str(request.get("iface", "")),
+            str(request.get("uplink", "")),
+        )
     if command == "status":
         return True, status()
     if command == "stop":
